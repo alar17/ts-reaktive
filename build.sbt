@@ -55,11 +55,20 @@ lazy val commonSettings = projectSettings ++ Seq(
       "io.kamon" %% "kamon-datadog" % kamonVersion,
       "io.kamon" %% "kamon-log-reporter" % kamonVersion,
       "io.kamon" %% "kamon-system-metrics" % kamonVersion,
+      "com.amazonaws" % "aws-java-sdk" % "1.10.64",
       "org.aspectj" % "aspectjweaver" % "1.8.8",
       "io.kamon" %% "kamon-autoweave" % "0.6.5", // missing for 0.6.6
       "org.slf4j" % "slf4j-log4j12" % "1.7.12"
     )
   }  
+)
+
+lazy val clusterSettings = projectSettings ++ Seq (
+  resolvers ++= Seq (Resolver.bintrayRepo("hseeberger", "maven")),
+  libraryDependencies ++= Seq (
+  "de.heikoseeberger" %% "constructr" % "0.17.0",
+  "de.heikoseeberger" %% "constructr-coordination-etcd" % "0.17.0" // in case of using etcd for coordination
+  )
 )
 
 lazy val `ts-reaktive-java` = project.settings(projectSettings: _*)
@@ -69,6 +78,8 @@ lazy val `ts-reaktive-testkit` = project.settings(commonSettings :+ (libraryDepe
 lazy val `ts-reaktive-testkit-assertj` = project.settings(commonSettings: _*)
 
 lazy val `ts-reaktive-akka` = project.settings(commonSettings: _*)
+
+lazy val `ts-reaktive-akka-cluster` = project.settings(commonSettings: _*)
 
 lazy val `ts-reaktive-marshal` = project.settings(projectSettings: _*).dependsOn(`ts-reaktive-java`)
 
@@ -96,6 +107,7 @@ lazy val `ts-reaktive-kamon-akka-cluster` = project.settings(commonSettings: _*)
 
 lazy val root = (project in file(".")).settings(publish := { }, publishLocal := { }).aggregate(
   `ts-reaktive-akka`,
+  `ts-reaktive-akka-cluster`,
   `ts-reaktive-java`,
   `ts-reaktive-actors`,
   `ts-reaktive-cassandra`,
