@@ -1,12 +1,14 @@
 package com.tradeshift.reaktive.replication.io;
 
 import java.util.Optional;
+import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.tradeshift.reaktive.protobuf.ReplicationMessages.EventsPersisted;
-import com.tradeshift.reaktive.protobuf.EventEnvelopeSerializer;
+import com.tradeshift.reaktive.akka.rest.EventMarshallers;
+import com.tradeshift.reaktive.protobuf.Query;
 import com.tradeshift.reaktive.replication.DataCenter;
 
 import akka.actor.ActorSystem;
@@ -16,7 +18,7 @@ import akka.http.javadsl.model.ws.BinaryMessage;
 import akka.http.javadsl.model.ws.Message;
 import akka.http.javadsl.model.ws.WebSocketRequest;
 import akka.http.javadsl.settings.ClientConnectionSettings;
-import akka.persistence.query.EventEnvelope2;
+import akka.persistence.query.EventEnvelope;
 import akka.stream.javadsl.Flow;
 import akka.util.ByteString;
 
@@ -30,20 +32,20 @@ public class WebSocketDataCenterClient implements DataCenter {
     private final String uri;
     private final ConnectionContext connectionContext;
     private final String name;
-    private final EventEnvelopeSerializer serializer;
+    private Function<EventEnvelope, Query.EventEnvelope> serializer;
     
     /**
      * Creates a new WebSocketDataCenterClient
-     * @param name Name of the data center
+     * @param name Name of the remote data center
      * @param connectionContext Connection context to apply. Any SSL client certificate should be configured here.
-     * @param uri Target URL that the remote datacenter is listening on.
+     * @param uri Target URL that the remote datacenter server is listening on ("wss://host:port/events/eventType")
      */
-    public WebSocketDataCenterClient(ActorSystem system, ConnectionContext connectionContext, String name, String uri, EventEnvelopeSerializer serializer) {
+    public WebSocketDataCenterClient(ActorSystem system, ConnectionContext connectionContext, String name, String uri) {
         this.system = system;
         this.connectionContext = connectionContext;
         this.name = name;
         this.uri = uri;
-        this.serializer = serializer;
+        this.serializer = EventMarshallers.getAkkaSerializer(system);
     }
 
     @Override
@@ -52,10 +54,10 @@ public class WebSocketDataCenterClient implements DataCenter {
     }
     
     @Override
-    public Flow<EventEnvelope2,Long,?> uploadFlow() {
+    public Flow<EventEnvelope,Long,?> uploadFlow() {
         ClientConnectionSettings settings = ClientConnectionSettings.create(system.settings().config());
         
-        return Flow.<EventEnvelope2>create()
+        return Flow.<EventEnvelope>create()
             .map(e -> (Message) BinaryMessage.create(serialize(e)))
             .via(Http.get(system).webSocketClientFlow(WebSocketRequest.create(uri), connectionContext, Optional.empty(), settings, system.log()))
             .map(msg -> {
@@ -70,7 +72,7 @@ public class WebSocketDataCenterClient implements DataCenter {
             .filter(l -> l > 0);
     }
 
-    protected ByteString serialize(EventEnvelope2 e) {
-        return ByteString.fromArray(serializer.toProtobuf(e).toByteArray());
+    protected ByteString serialize(EventEnvelope e) {
+        return ByteString.fromArray(serializer.apply(e).toByteArray());
     }
 }

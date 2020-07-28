@@ -1,7 +1,13 @@
 target
 bin
+.idea
 .classpath
+.DS_Store
 .project
 .settings
 .cache-main
 .cache-tests
+.ensime
+.ensime_cache
+.bloop
+.metals

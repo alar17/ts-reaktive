@@ -1,5 +1,7 @@
 package com.tradeshift.reaktive.actors.acl;
 
+import static io.vavr.control.Option.none;
+import static io.vavr.control.Option.some;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.forgerock.cuppa.Cuppa.beforeEach;
 import static org.forgerock.cuppa.Cuppa.describe;
@@ -10,8 +12,7 @@ import java.util.UUID;
 import org.forgerock.cuppa.junit.CuppaRunner;
 import org.junit.runner.RunWith;
 
-import javaslang.control.Option;
-import static javaslang.control.Option.*;
+import io.vavr.control.Option;
 
 @RunWith(CuppaRunner.class)
 public class ACLSpec {
@@ -123,6 +124,17 @@ public class ACLSpec {
                 
                 updated = updated.apply(new Change(some(userId), none(), some(Right.WRITE)));
                 assertThat(updated.isOnlyGrantedTo(otherUserId, Right.WRITE)).isTrue();
+            });
+
+            it("should grant new users and rights independently", () -> {
+                UUID otherUserId = UUID.fromString("2204f471-afb4-411b-bcbc-f76c2cbb69ea");
+
+                ACL<Right, Change> updated = acl
+                    .apply(new Change(some(userId), some(Right.WRITE), none()))
+                    .apply(new Change(some(otherUserId), some(Right.READ), none()));
+
+                assertThat(updated.isGranted(Right.READ, userId)).isFalse();
+                assertThat(updated.isGranted(Right.WRITE, otherUserId)).isFalse();
             });
         });
     }

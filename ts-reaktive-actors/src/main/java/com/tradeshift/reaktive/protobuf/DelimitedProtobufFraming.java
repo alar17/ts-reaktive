@@ -24,33 +24,34 @@ import scala.Tuple2;
 /**
  * Parses an incoming byte string of "delimited" protobuf messages such, that each ByteString makes
  * up a complete message.
- * 
+ *
  * The stream is expected to consist of [Varint length] [length bytes] [Varint length] [length bytes] etc.
  * This is the format that multiple calls to {@link Message#writeDelimitedTo(java.io.OutputStream)} would produce.
- * 
+ *
  * The length delimiters themselves are not emitted downstream, i.e. each downstream ByteString can be decoded
  * using protobuf's "parse" function, not "parseDelimited".
  */
 public class DelimitedProtobufFraming extends GraphStage<FlowShape<ByteString,ByteString>> {
     public static final DelimitedProtobufFraming instance = new DelimitedProtobufFraming();
-    
+
     private static final Logger log = LoggerFactory.getLogger(DelimitedProtobufFraming.class);
-    
+
     private final Inlet<ByteString> in = Inlet.create("in");
     private final Outlet<ByteString> out = Outlet.create("out");
     private final FlowShape<ByteString, ByteString> shape = FlowShape.of(in, out);
-    
+
     private DelimitedProtobufFraming() {}
-    
+
     @Override
     public FlowShape<ByteString, ByteString> shape() {
         return shape;
     }
 
     @Override
-    public GraphStageLogic createLogic(Attributes attr) throws Exception {
+    public GraphStageLogic createLogic(Attributes attr) {
         return new GraphStageLogic(shape) {
             ByteString buf = ByteString.empty();
+            List<ByteString> deframed = new ArrayList<>();
             {
                 setHandler(in, new AbstractInHandler() {
                     @Override
@@ -62,16 +63,15 @@ public class DelimitedProtobufFraming extends GraphStage<FlowShape<ByteString,By
 
                     @Override
                     public void onUpstreamFinish() {
-                        if (buf.size() > 0) {
+                        if (buf.size() > 0 || !deframed.isEmpty()) {
                             deliverBuf();
                         }
                         completeStage();
-                    };
-                    
+                    }
+
                     private void deliverBuf() {
                         log.debug("Buf now {}", buf);
                         try {
-                            List<ByteString> deframed = new ArrayList<>();
                             while (buf.size() > 0) {
                                 CodedInputStream i = CodedInputStream.newInstance(buf.iterator().asInputStream());
                                 long contentLength = i.readUInt64();
@@ -90,11 +90,14 @@ public class DelimitedProtobufFraming extends GraphStage<FlowShape<ByteString,By
                                     break;
                                 }
                             }
-                            
+
                             if (deframed.isEmpty()) {
-                                pull(in);
+                                if (!isClosed(in)) {
+                                    pull(in);
+                                }
                             } else {
                                 emitMultiple(out, deframed.iterator());
+                                deframed = new ArrayList<>();
                             }
                         } catch (IOException x) {
                             log.debug("Protobuf unhappy at length {}", buf.size());
@@ -107,7 +110,7 @@ public class DelimitedProtobufFraming extends GraphStage<FlowShape<ByteString,By
                         }
                     }
                 });
-                
+
                 setHandler(out, new AbstractOutHandler() {
                     @Override
                     public void onPull() {

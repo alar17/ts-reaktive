@@ -3,8 +3,8 @@ package com.tradeshift.reaktive.csv.marshal;
 import static com.tradeshift.reaktive.csv.marshal.CsvProtocol.column;
 import static com.tradeshift.reaktive.csv.marshal.CsvProtocol.csv;
 import static com.tradeshift.reaktive.marshal.Protocol.option;
-import static javaslang.control.Option.none;
-import static javaslang.control.Option.some;
+import static io.vavr.control.Option.none;
+import static io.vavr.control.Option.some;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.forgerock.cuppa.Cuppa.describe;
 import static org.forgerock.cuppa.Cuppa.it;
@@ -142,7 +142,9 @@ public class CsvProtocolSpec extends SharedActorSystemSpec {
         return output;
     }
 
-    private <T> String render(Protocol<CsvEvent, T> proto, @SuppressWarnings("unchecked") T... elements)
+    @SafeVarargs
+    @SuppressWarnings( "varargs" ) // Eclipse thinks it's unneeded, but javac will emit a warning otherwise.
+    private final <T> String render(Protocol<CsvEvent, T> proto, T... elements)
         throws InterruptedException, ExecutionException, TimeoutException {
         return Source.from(Arrays.asList(elements))
             .via(ProtocolWriter.of(proto))

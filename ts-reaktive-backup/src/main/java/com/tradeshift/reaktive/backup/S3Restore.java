@@ -1,8 +1,9 @@
 package com.tradeshift.reaktive.backup;
 
-import static com.tradeshift.reaktive.backup.DropUntilNext.dropUntilNext;
 import static akka.pattern.PatternsCS.ask;
+import static com.tradeshift.reaktive.backup.DropUntilNext.dropUntilNext;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
@@ -19,10 +20,7 @@ import akka.persistence.AbstractPersistentActor;
 import akka.persistence.RecoveryCompleted;
 import akka.stream.Materializer;
 import akka.stream.javadsl.Sink;
-import akka.util.Timeout;
-import scala.PartialFunction;
 import scala.concurrent.duration.FiniteDuration;
-import scala.runtime.BoxedUnit;
 
 /**
  * Restores from an S3 bucket that S3Backup has written to.
@@ -36,7 +34,7 @@ public class S3Restore extends AbstractPersistentActor {
     
     private final Materializer materializer = SharedActorMaterializer.get(context().system());
     private final int maxInFlight;
-    private final Timeout timeout;
+    private final Duration timeout;
     private final S3 s3;
     private final String tag;
     private final ActorRef shardRegion;
@@ -59,13 +57,13 @@ public class S3Restore extends AbstractPersistentActor {
         
         Config config = context().system().settings().config().getConfig("ts-reaktive.backup.restore");
         maxInFlight = config.getInt("maxInFlight");
-        timeout = Timeout.apply(config.getDuration("timeout", TimeUnit.MILLISECONDS), TimeUnit.MILLISECONDS);
+        timeout = config.getDuration("timeout");
         updateAccuracy = FiniteDuration.create(config.getDuration("update-accuracy", TimeUnit.MILLISECONDS), TimeUnit.MILLISECONDS);
     }
     
     @Override
-    public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder
+    public Receive createReceive() {
+        return ReceiveBuilder.create()
             .matchEquals("init", msg -> sender().tell("ack", self()))
             .match(Long.class, (Long o) -> {
                 log.debug("Persisting {}", o);
@@ -89,8 +87,8 @@ public class S3Restore extends AbstractPersistentActor {
     }
 
     @Override
-    public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder
+    public Receive createReceiveRecover() {
+        return ReceiveBuilder.create()
             .match(Long.class, o -> offset = o)
             .match(RecoveryCompleted.class, msg -> startRestore())
             .build();
@@ -106,7 +104,7 @@ public class S3Restore extends AbstractPersistentActor {
         .list(tag)
         // skip over entries until the one BEFORE entry where startTime >= offset (since the one before may have been only partially restored)
         .via(dropUntilNext(l -> S3.getStartInstant(l).toEpochMilli() >= offset, true))
-        .flatMapConcat(entry -> s3.loadEvents(entry.getKey().substring(entry.getKey().lastIndexOf("/") + 1)))
+        .flatMapConcat(entry -> s3.loadEvents(entry.key().substring(entry.key().lastIndexOf("/") + 1)))
         .mapAsync(maxInFlight, e -> {
             log.debug("Replaying {}:{}", e.getPersistenceId(), e.getSequenceNr());
             return ask(shardRegion, e, timeout);

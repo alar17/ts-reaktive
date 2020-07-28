@@ -6,8 +6,12 @@ import javax.xml.stream.events.XMLEvent;
 import com.tradeshift.reaktive.marshal.Protocol;
 import com.tradeshift.reaktive.marshal.TStringProtocol;
 
-import javaslang.Tuple2;
+import io.vavr.Tuple2;
 
+/**
+ * Protocol for a tuple of QName and String, where the String can be transformed to other types
+ * by invoking .as(TYPE).
+ */
 public class QNameStringProtocol extends TStringProtocol<XMLEvent,QName> {
 
     public QNameStringProtocol(Protocol<XMLEvent,Tuple2<QName, String>> delegate) {

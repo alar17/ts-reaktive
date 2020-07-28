@@ -2,12 +2,12 @@ package com.tradeshift.reaktive.actors.acl;
 
 import java.util.UUID;
 
-import javaslang.Function1;
-import javaslang.Tuple;
-import javaslang.collection.HashSet;
-import javaslang.collection.Map;
-import javaslang.collection.Set;
-import javaslang.control.Option;
+import io.vavr.Function1;
+import io.vavr.Tuple;
+import io.vavr.collection.HashSet;
+import io.vavr.collection.Map;
+import io.vavr.collection.Set;
+import io.vavr.control.Option;
 
 /**
  * Immutable class that manages a list of UUID entries that can have certain rights on a resource.
@@ -49,15 +49,20 @@ public class ACL<R,C> {
         for (UUID target: builder.getTargetId(change)) {
             Map<R,Set<UUID>> entries = this.entries;
             for (R granted: builder.getGranted(change)) {
-                entries = entries.put(granted, entries.getOrElse(Tuple.of(granted, HashSet.empty()))._2.add(target));
+                entries = entries.put(granted, entries.getOrElse(granted, HashSet.empty()).add(target));
             }
             for (R revoked: builder.getRevoked(change)) {
-                entries = entries.put(revoked, entries.getOrElse(Tuple.of(revoked, HashSet.empty()))._2.remove(target));
+                entries = entries.put(revoked, entries.getOrElse(revoked, HashSet.empty()).remove(target));
             }
             return (entries.eq(this.entries)) ? this : new ACL<>(builder, entries);
         }
         
         return this;
+    }
+
+    /** Returns all the rights granted in this ACL */
+    public Map<R,Set<UUID>> getGranted() {
+        return entries;
     }
 
     /**

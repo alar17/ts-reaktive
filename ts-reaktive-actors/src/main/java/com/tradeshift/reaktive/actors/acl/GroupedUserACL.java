@@ -5,10 +5,11 @@ import java.util.UUID;
 
 import com.tradeshift.reaktive.protobuf.UUIDs;
 
-import javaslang.Function1;
-import javaslang.collection.HashSet;
-import javaslang.collection.Set;
-import javaslang.control.Option;
+import io.vavr.Function1;
+import io.vavr.collection.HashSet;
+import io.vavr.collection.Map;
+import io.vavr.collection.Set;
+import io.vavr.control.Option;
 
 /**
  * Combines an ACL for users and an ACL for groups.
@@ -118,5 +119,14 @@ public class GroupedUserACL<R extends Enum<R>,C> {
     public boolean isOnlyGrantedToGroup(UUID groupId, R right) {
         return groupAcl.isOnlyGrantedTo(groupId, right);
     }
-}
 
+    /** Returns, per right, the set of users that have been granted that right. */
+    public Map<R,Set<UUID>> getGrantedUsers() {
+        return userAcl.getGranted();
+    }
+
+    /** Returns, per right, the set of groups that have been granted that right. */
+    public Map<R,Set<UUID>> getGrantedGroups() {
+        return groupAcl.getGranted();
+    }
+}

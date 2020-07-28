@@ -1,9 +1,10 @@
 package com.tradeshift.reaktive.actors;
 
+import static akka.pattern.PatternsCS.pipe;
+
 import java.io.Serializable;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.typesafe.config.Config;
@@ -15,18 +16,15 @@ import akka.cluster.sharding.ShardRegion;
 import akka.event.Logging;
 import akka.event.LoggingAdapter;
 import akka.japi.Procedure;
-import akka.japi.pf.PFBuilder;
 import akka.japi.pf.ReceiveBuilder;
-import akka.persistence.AbstractPersistentActor;
+import akka.persistence.AbstractPersistentActorWithTimers;
 import akka.persistence.SnapshotOffer;
 import akka.persistence.journal.Tagged;
-import javaslang.collection.Seq;
-import javaslang.collection.Vector;
-import javaslang.control.Option;
-import scala.PartialFunction;
+import akka.actor.Status.Failure;
+import io.vavr.collection.Seq;
+import io.vavr.collection.Vector;
+import io.vavr.control.Option;
 import scala.concurrent.duration.Duration;
-import scala.runtime.BoxedUnit;
-import static akka.pattern.PatternsCS.pipe;
 
 /**
  * Base class for persistent actor that manages some state, receives commands of a defined type, and emits events of a defined type.
@@ -48,48 +46,77 @@ import static akka.pattern.PatternsCS.pipe;
  * @param <E> Type of events that this actor emits.
  * @param <S> Immutable type that contains all the state the actor maintains.
  */
-public abstract class AbstractStatefulPersistentActor<C,E,S extends AbstractState<E,S>> extends AbstractPersistentActor {
-    protected final LoggingAdapter log = Logging.getLogger(getContext().system(), this);
+public abstract class AbstractStatefulPersistentActor<C,E,S extends AbstractState<E,S>> extends AbstractPersistentActorWithTimers {
+    protected final LoggingAdapter log = Logging.getLogger(context().system(), this);
     
     private S state = initialState();
+    private boolean idle = true;
 
-    //IDEA: We can save 8*3 bytes per actor by pushing these 3 fields down into a type class, since the fields have the same value for every type of actor...
+    //IDEA: We can save memory per actor by pushing these fields down into a type class, since the fields have the same value for every type of actor...
     protected final Class<E> eventType;
     protected final Class<C> commandType;
     private final String tagName;
+    private final CommandHandler<C,E,S> handlers;
     
     public static String getEventTag(Config config, Class<?> eventType) {
         ConfigObject tags = config.getConfig("ts-reaktive.actors.tags").root();
         return (String) tags.getOrDefault(eventType.getName(), ConfigValueFactory.fromAnyRef(eventType.getSimpleName())).unwrapped();
     }
     
-    public AbstractStatefulPersistentActor(Class<C> commandType, Class<E> eventType) {
+    public AbstractStatefulPersistentActor(Class<C> commandType, Class<E> eventType, CommandHandler<C,E,S> handlers) {
         this.commandType = commandType;
         this.eventType = eventType;
         this.tagName = getEventTag(context().system().settings().config(), eventType);
-        getContext().setReceiveTimeout(Duration.fromNanos(getPassivateTimeout().toNanos()));
+        this.handlers = handlers;
+        context().setReceiveTimeout(Duration.fromNanos(getPassivateTimeout().toNanos()));
     }
 
     protected java.time.Duration getPassivateTimeout() {
         return context().system().settings().config().getDuration("ts-reaktive.actors.passivate-timeout");
     }
 
+    /**
+     * Returns whether the asynchronous part of a Handler for this command is currently in progress
+     * (and, hence, further commands would currently be stashed if sent to this actor)
+     */
+    protected boolean isCommandInProgress() {
+        return !idle;
+    }
+
+    @SuppressWarnings("unchecked")
     @Override
-    public PartialFunction<Object, BoxedUnit> receiveCommand() {
-        return ReceiveBuilder
-            .match(CommandWithHandler.class, m -> {
-                @SuppressWarnings("unchecked") CommandWithHandler msg = m;
-                handleCommand(msg.command, msg.handler);
+    public Receive createReceive() {
+        return ReceiveBuilder.create()
+            .match(commandType, msg -> canHandleCommand(msg) && idle, msg -> {
+                handleCommand(msg);
+                idle = false;
             })
-            .match(commandType, this::handleCommand)
+            .match(commandType, msg -> canHandleCommand(msg), msg -> {
+                // we're awaiting results from another command, so let's wait with this one
+                stash();
+            })
+            .match(CommandHandler.Results.class, msg -> idle, msg -> {
+                // If results happen to come in while we're idle, let's accept them anyways
+                log.warning("Received unexpected Results object when idle, but accepting anyways: {}", msg);
+                handleResults((CommandHandler.Results<E>) msg);
+            })
+            .match(CommandHandler.Results.class, msg -> {
+                handleResults((CommandHandler.Results<E>) msg);
+                unstashAll();
+                idle = true;
+            })
+            .match(Failure.class, f -> {
+                log.error(f.cause(), "A future piped to this actor has failed, rethrowing.");
+                throw (f.cause() instanceof Exception) ? Exception.class.cast(f.cause()) : new Exception(f.cause());
+            })
             .matchEquals(ReceiveTimeout.getInstance(), msg -> passivate())
             .match(Stop.class, msg -> context().stop(self()))
             .build();
     }
 
     @Override
-    public PartialFunction<Object, BoxedUnit> receiveRecover() {
-        return ReceiveBuilder
+    public Receive createReceiveRecover() {
+        return ReceiveBuilder.create()
             .match(eventType, evt -> { updateState(evt); })
             .match(SnapshotOffer.class, snapshot -> {
                 // Snapshots support is not implemented yet.
@@ -108,37 +135,6 @@ public abstract class AbstractStatefulPersistentActor<C,E,S extends AbstractStat
     }
 
     /**
-     * Returns the partial function that asynchronously handles commands sent to this actor, allowing multiple
-     * concurrent commands being asynchronously in-flight at the same time. Once the CompletionStage are resolved,
-     * the individual handlers are of course executed sequentially using the actor's normal message processing mechanism.
-     * 
-     * Incoming commands are first tried using applyCommandAsync(), and then applyCommand() if unhandled.
-     * 
-     * The default implementation is empty, i.e. all incoming commands are handled by applyCommand().
-     * 
-     * Use {@link PFBuilder} to create partial functions.
-     */
-    protected PartialFunction<C, CompletionStage<? extends AbstractCommandHandler<C,E,S>>> applyCommandAsync() {
-        return new PFBuilder<C, CompletionStage<? extends AbstractCommandHandler<C,E,S>>>().build();
-    }
-    
-    /**
-     * Returns a {@link PFBuilder} of the right type for applyCommandAsync. Use this method to trim down
-     * on repeating code in your actor class.
-     */
-    protected PFBuilder<C, CompletionStage<? extends AbstractCommandHandler<C,E,S>>> applyCommandAsyncBuilder() {
-        return new PFBuilder<>();
-    }
-    
-    /**
-     * Returns the partial function that handles commands sent to this actor.
-     * Incoming commands are first tried using applyCommandAsync(), and then applyCommand() if unhandled.
-     * 
-     * Use {@link PFBuilder} to create partial functions.
-     */
-    protected abstract PartialFunction<C, ? extends AbstractCommandHandler<C,E,S>> applyCommand();
-    
-    /**
      * Returns the initial value the state should be, when the actor is just created.
      * 
      * Although the implementation of this method is free to investigate the actor's context() and its environment, it must
@@ -147,35 +143,37 @@ public abstract class AbstractStatefulPersistentActor<C,E,S extends AbstractStat
     protected abstract S initialState();
     
     /**
-     * Looks up a handler using handleCommandAsync() or handleCommand(), and then invokes
-     * handleCommand(cmd, handler) once the handler is resolved.
+     * Returns whether any handler can handle the given command.
+     */
+    protected boolean canHandleCommand(C cmd) {
+        return handlers.canHandle(cmd);
+    }
+    
+    /**
+     * Handles the given command, and processes its results once they come in asynchronously. 
+     * 
+     * Must only be invoked if {@link #canHandleCommand(Object)} has returned true for this command.
      */
     protected void handleCommand(C cmd) {
-        if (applyCommandAsync().isDefinedAt(cmd)) {
-            log.info("{} async processing {}", self().path(), cmd);
-            pipe(applyCommandAsync().apply(cmd).thenApply(handler -> new CommandWithHandler(cmd, handler)), context().dispatcher()).to(self(), sender());
-        } else {
-            log.info("{} processing {}", self().path(), cmd);
-            handleCommand(cmd, applyCommand().apply(cmd));
-        }
+        pipe(handlers.handle(state, cmd), context().dispatcher()).to(self(), sender());
     }
 
     /**
-     * Executes the given command using the given handler, emitting any events, and responding to sender().
+     * Applies the results that came in from a handler, emitting any events, and responding to sender().
      */
-    protected void handleCommand(C cmd, AbstractCommandHandler<C, E, S> handler) {
-        Option<Object> error = handler.getValidationError(lastSequenceNr());
+    protected void handleResults(CommandHandler.Results<E> results) {
+        Option<Object> error = results.getValidationError(lastSequenceNr());
         if (error.isDefined()) {
             log.debug("  invalid: {}", error.get());
             sender().tell(error.get(), self());
-        } else if (handler.isAlreadyApplied()) {
+        } else if (results.isAlreadyApplied()) {
             log.debug("  was already applied.");
-            sender().tell(handler.getIdempotentReply(lastSequenceNr()), self());
+            sender().tell(results.getIdempotentReply(lastSequenceNr()), self());
         } else {
-            Seq<E> events = handler.getEventsToEmit();
+            Seq<E> events = results.getEventsToEmit();
             log.debug("  emitting {}", events);
             if (events.isEmpty()) {
-                sender().tell(handler.getReply(events, lastSequenceNr()), self());
+                sender().tell(results.getReply(events, lastSequenceNr()), self());
             } else {
                 if (lastSequenceNr() == 0) {
                     validateFirstEvent(events.head());
@@ -183,7 +181,7 @@ public abstract class AbstractStatefulPersistentActor<C,E,S extends AbstractStat
                 AtomicInteger need = new AtomicInteger(events.size());
                 persistAllEvents(events, evt -> {
                     if (need.decrementAndGet() == 0) {
-                        sender().tell(handler.getReply(events, lastSequenceNr()), self());
+                        sender().tell(results.getReply(events, lastSequenceNr()), self());
                     }
                 });
             }
@@ -301,14 +299,4 @@ public abstract class AbstractStatefulPersistentActor<C,E,S extends AbstractStat
         private static final long serialVersionUID = 1L;
     }
     private static final Stop STOP = new Stop();
-    
-    private class CommandWithHandler {
-        private final C command;
-        private final AbstractCommandHandler<C, E, S> handler;
-        
-        public CommandWithHandler(C command, AbstractCommandHandler<C, E, S> handler) {
-            this.command = command;
-            this.handler = handler;
-        }
-    }
 }

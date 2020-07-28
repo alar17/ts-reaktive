@@ -2,6 +2,7 @@ package com.tradeshift.reaktive.backup;
 
 import static akka.pattern.PatternsCS.pipe;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
@@ -21,14 +22,11 @@ import akka.japi.pf.ReceiveBuilder;
 import akka.pattern.Backoff;
 import akka.pattern.BackoffSupervisor;
 import akka.persistence.query.NoOffset;
-import akka.persistence.query.javadsl.EventsByTagQuery2;
+import akka.persistence.query.javadsl.EventsByTagQuery;
 import akka.stream.Materializer;
 import akka.stream.javadsl.Sink;
-import javaslang.collection.Vector;
-import scala.PartialFunction;
-import scala.concurrent.duration.Duration;
+import io.vavr.collection.Vector;
 import scala.concurrent.duration.FiniteDuration;
-import scala.runtime.BoxedUnit;
 
 /**
  * Makes a continuous backup of events onto an S3 bucket, grouping events into keys of predefined batch sizes.
@@ -45,14 +43,14 @@ public class S3Backup extends AbstractActor {
      * @param tag Tag to pass to the above query
      * @param s3 Service interface to communicate with S3
      */
-    public static void start(ActorSystem system, EventsByTagQuery2 query, String tag, S3 s3) {
+    public static void start(ActorSystem system, EventsByTagQuery query, String tag, S3 s3) {
         system.actorOf(ClusterSingletonManager.props(
             BackoffSupervisor.props(
                 Backoff.onFailure(
                     Props.create(S3Backup.class, () -> new S3Backup(query, tag, s3)),
                     "a",
-                    Duration.create(1, TimeUnit.SECONDS),
-                    Duration.create(1, TimeUnit.SECONDS), // TODO make these 3 configurable
+                    FiniteDuration.create(1, TimeUnit.SECONDS),
+                    FiniteDuration.create(1, TimeUnit.SECONDS), // TODO make these 3 configurable
                     0.2)
             ),
             Done.getInstance(),
@@ -62,31 +60,34 @@ public class S3Backup extends AbstractActor {
     private static final Logger log = LoggerFactory.getLogger(S3Backup.class);
     
     private final Materializer materializer = SharedActorMaterializer.get(context().system());
-    private final EventsByTagQuery2 query;
+    private final EventsByTagQuery query;
     private final String tag;
     private final S3 s3;
     private final int eventChunkSize;
-    private final FiniteDuration eventChunkDuration;
+    private final Duration eventChunkDuration;
     
-    public S3Backup(EventsByTagQuery2 query, String tag, S3 s3) {
+    public S3Backup(EventsByTagQuery query, String tag, S3 s3) {
         this.query = query;
         this.tag = tag;
         this.s3 = s3;
         
         Config backupCfg = context().system().settings().config().getConfig("ts-reaktive.backup.backup");
         eventChunkSize = backupCfg.getInt("event-chunk-max-size");
-        eventChunkDuration = FiniteDuration.create(backupCfg.getDuration("event-chunk-max-duration", TimeUnit.MILLISECONDS), TimeUnit.MILLISECONDS);
+        eventChunkDuration = backupCfg.getDuration("event-chunk-max-duration");
         
         pipe(s3.loadOffset(), context().dispatcher()).to(self());
-        
-        receive(ReceiveBuilder
-            .match(Long.class, offset -> {
-                context().become(startBackup(offset));
-            })
-            .build());
     }
 
-    private PartialFunction<Object, BoxedUnit> startBackup(long offset) {
+    @Override
+    public Receive createReceive() {
+    	return ReceiveBuilder.create()
+            .match(Long.class, offset -> {
+                getContext().become(startBackup(offset));
+            })
+            .build();
+    }
+    
+    private Receive startBackup(long offset) {
         query
             .eventsByTag(tag, NoOffset.getInstance())
             // create backups of max [N] elements, or at least every [T] on activity
@@ -96,7 +97,7 @@ public class S3Backup extends AbstractActor {
             .mapAsync(4, list -> s3.store(tag, Vector.ofAll(list)).thenApply(done -> list.get(list.size() - 1).offset()))
             .runWith(Sink.actorRefWithAck(self(), "init", "ack", "done", Failure::new), materializer);
         
-        return ReceiveBuilder
+        return ReceiveBuilder.create()
             .matchEquals("init", msg -> sender().tell("ack", self()))
             .match(Long.class, l -> pipe(s3.saveOffset(l).thenApply(done -> "ack"), context().dispatcher()).to(sender()))
             .match(Failure.class, msg -> {

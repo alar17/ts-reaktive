@@ -14,10 +14,10 @@ import com.tradeshift.reaktive.csv.CsvEvent;
 import com.tradeshift.reaktive.marshal.ReadProtocol;
 import com.tradeshift.reaktive.marshal.Reader;
 
-import javaslang.Function1;
-import javaslang.collection.Seq;
-import javaslang.collection.Vector;
-import javaslang.control.Try;
+import io.vavr.Function1;
+import io.vavr.collection.Seq;
+import io.vavr.collection.Vector;
+import io.vavr.control.Try;
 
 /**
  * Combines several nested protocols that each return separate values into a single value,
@@ -45,7 +45,7 @@ public class MultiReadProtocol<T> implements ReadProtocol<CsvEvent, T> {
         @SuppressWarnings("unchecked")
         Seq<Reader<CsvEvent, Object>> readers = protocols.map(c -> (Reader<CsvEvent,Object>) c.reader());
         @SuppressWarnings("unchecked")
-        Try<Object>[] values = new Try[protocols.size()];
+        Try<Object>[] values = (Try<Object>[]) new Try<?>[protocols.size()];
         
         return new Reader<CsvEvent, T>() {
             {

@@ -6,7 +6,7 @@ import java.util.concurrent.CompletionStage;
 import com.datastax.driver.core.PreparedStatement;
 
 import akka.Done;
-import javaslang.collection.HashSet;
+import io.vavr.collection.HashSet;
 
 /**
  * Stores which persistenceIds should be visible in other data centers (in addition to the current one)
@@ -48,7 +48,7 @@ public class VisibilityRepository {
     }
 
     public CompletionStage<Boolean> isVisibleTo(DataCenter target, String persistenceId) {
-        return getVisibility(persistenceId).thenApply(v -> v.getDatacenters().contains(target.getName()));
+        return getVisibility(persistenceId).thenApply(v -> v.isVisibleTo(target));
     }
 
     /**
